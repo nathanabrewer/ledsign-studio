@@ -144,46 +144,45 @@ playlist uploads zero bitmaps and only rewrites the container.
 fixed-width NUL-padded field, then panel geometry as two `uint16`s and a parameters block,
 then per-entry records in play order.
 
-**Entry records are variable length.** A record is:
+**Entry record layout.** Records are variable length; the name field is 4-byte aligned and
+sized per playlist, so stride differs between playlists but is uniform within one.
 
 ```
-12 zero bytes · 4-byte param block (c0 00 ff 00) · bitmap filename (NUL-padded,
-4-byte aligned) · trailing fields
++0   c0 00 ff 00        record marker
++4   filename           NUL-padded, 4-byte aligned
++20  uint32  86400      TIME SPAN, seconds        (UI: "Time Span", 86399 = all day)
++24  uint32
++28  uint32  INT32_MAX  END DATE sentinel         (UI: "No end date"; equals 1 Jan 2038,
+                                                   the signed 32-bit time_t rollover)
++32  uint32             DWELL, MILLISECONDS       [CONFIRMED]
++36  ...                effects, layer, priority
 ```
 
-Frames whose text is *static* are rendered into the bitmap by the host, and their record
-ends there. Frames carrying **dynamic text** (clock, temperature) additionally embed one
-sub-record per text object, each followed by a font reference:
+Offsets +20, +28 and +32 are confirmed: they correspond one-to-one with the vendor UI's
+Time Span, No-end-date and Duration controls, and changing Duration from 3 s to 1 s moved
+exactly the two bytes of the +32 uint32 (3000 -> 1000).
+
+Frames carrying **dynamic text** (clock, temperature) additionally embed one sub-record per
+text object, each followed by a font reference:
 
 ```
 ... 05 00 12 10 10 00 13 38 ... 00 00 00 ff "arial-19.fnt" 55 54 ...
 ```
 
 This is why font names appear interleaved between frame records rather than in a separate
-table — they belong to the preceding frame's record. A parser that assumes a fixed stride
-will mis-handle any playlist containing a clock or temperature frame.
+table — they belong to the preceding frame's record. A parser assuming a fixed stride will
+mis-handle any playlist containing a clock or temperature frame.
 
-Each record carries a trailing parameter block:
+### Scheduling  `[PARTIAL]`
+The vendor UI exposes per-frame scheduling: None / Daily / Weekly / Monthly / Yearly, plus
+**Temperature** (show only while the panel is above or below a setpoint), with start/end
+time, start date, optional end date, and a priority.
 
-```
-80 51 01 00   uint32 = 86400      schedule window, seconds in a day   [INFERRED]
-00 00 00 00
-ff ff ff 7f   uint32 = INT32_MAX  no-end sentinel                     [INFERRED]
-<dwell>       uint32              DWELL TIME IN MILLISECONDS          [CONFIRMED]
-00 00 00 00
-<n>           uint16              entry number                        [INFERRED]
-```
-
-**Dwell is confirmed.** Changing one frame's on-screen time from 3 s to 1 s in the vendor
-app altered exactly two bytes in the whole container — `b8 0b` → `e8 03`, i.e. the uint32
-3000 → 1000. Dwell is therefore milliseconds, not seconds, despite the authoring UI
-presenting whole seconds.
-
-The neighbouring 86400 and INT32_MAX values are consistent with per-frame dayparting and an
-open-ended date range, but have not been moved experimentally and remain inferred.
-
-Because sizing is not yet fully derived, this library edits a captured container rather than
-synthesising one; see `program_with_template()`.
+Scheduling appears to be evaluated **on the controller**, not resolved by the host: the
+temperature mode requires live panel temperature, which only the controller has (and which
+it reports in every file-read preamble). The exact encoding of the non-Continuous modes is
+not yet captured — blank frames are dropped at transmit, so scheduled frames must carry
+content to appear in the container.
 
 **Renaming caution:** bitmap filenames are derived from the authoring playlist's name.
 Renaming a playlist therefore renames every frame, causing a full re-upload of all bitmaps
