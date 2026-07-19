@@ -44,10 +44,28 @@ Request — 12 bytes:
 ```
 73 74 07 03 00 03 00 00  04 00 00 00
 ```
-Response begins with ASCII `star` + a `uint32`, then repeating records:
+
+The response is **not** one flat stream. It arrives as a sequence of blocks, each
+introduced by its own header:
+
+```
+"star" (4 bytes) · uint32 LE block_length      ← block_length INCLUDES this 8-byte header
+then records until block_length is consumed, then the next "star" block
+```
+
+Each record:
 ```
 uint16 namelen · uint16 alloclen · char name[alloclen] · uint32 size · byte ts[6]
 ```
+`alloclen` is `namelen` rounded up to a 4-byte boundary, so a record occupies
+`4 + alloclen + 10` bytes.
+
+A parser that ignores the block framing will run into the second `star` header and
+mis-read it as a record — the symptom is a plausible-looking but truncated file list.
+Verified against a controller holding 1445 files.
+
+The listing includes more than frames: font files (`*.fnt`), the playlist container
+(`play-1.lst`), and the controller's firmware image.
 
 ### 3.2 File read
 A **round-trip is mandatory** between the two requests; sending them back-to-back resets

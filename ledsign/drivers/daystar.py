@@ -165,22 +165,44 @@ class DayStarSign(SignDriver):
         return data
 
     def list_files(self) -> list:
+        """Enumerate files on the sign.
+
+        The listing arrives as a sequence of blocks, each introduced by a 'star'
+        magic and a uint32 giving that block's total length (header included).
+        Within a block, records are:
+
+            uint16 namelen · uint16 alloclen · name[alloclen] · uint32 size · byte ts[6]
+
+        where alloclen is namelen rounded up to a 4-byte boundary.
+        """
         with self._connect() as s:
             s.sendall(self._short(SEL_LIST, flag=0))
             blob = self._drain(s)
         if not blob.startswith(b"star"):
             raise IOError(f"unexpected listing magic {blob[:8].hex(' ')}")
-        out, off = [], 8
-        while off + 4 <= len(blob):
-            namelen, alloclen = struct.unpack_from("<HH", blob, off)
-            off += 4
-            if alloclen == 0 or off + alloclen + 10 > len(blob):
+
+        out, pos = [], 0
+        while pos + 8 <= len(blob):
+            if blob[pos:pos + 4] != b"star":
+                break                                   # end of blocks
+            block_len = struct.unpack_from("<I", blob, pos + 4)[0]
+            end = min(pos + block_len, len(blob)) if block_len else len(blob)
+            off = pos + 8
+            while off + 4 <= end:
+                namelen, alloclen = struct.unpack_from("<HH", blob, off)
+                if namelen == 0 or alloclen != ((namelen + 3) // 4) * 4:
+                    break                               # not a valid record
+                if off + 4 + alloclen + 10 > end:
+                    break                               # truncated tail
+                off += 4
+                name = blob[off:off + namelen].split(b"\x00")[0].decode("ascii", "replace")
+                off += alloclen
+                size = struct.unpack_from("<I", blob, off)[0]; off += 4
+                ts = blob[off:off + 6]; off += 6
+                out.append(RemoteFile(name=name, size=size, timestamp=ts))
+            if not block_len:
                 break
-            name = blob[off:off + namelen].split(b"\x00")[0].decode("ascii", "replace")
-            off += alloclen
-            size = struct.unpack_from("<I", blob, off)[0]; off += 4
-            ts = blob[off:off + 6]; off += 6
-            out.append(RemoteFile(name=name, size=size, timestamp=ts))
+            pos += block_len
         return out
 
     def info(self) -> dict:
