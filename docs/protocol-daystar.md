@@ -79,7 +79,20 @@ the connection.
 ← 8 bytes    bytes 4..7 = uint32 LE file size
 ← <size> bytes of raw file
 ```
-Path namespace observed: `/bitmaps/<name>.bmp`, `/sysdata/*.log`.
+#### Path namespaces
+The directory listing returns **bare filenames with no path**, but reads require the
+correct namespace. Confirmed against live hardware:
+
+| Prefix | Holds |
+|---|---|
+| `/bitmaps/` | frame bitmaps (`.bmp`) |
+| `/fonts/` | bitmap fonts (`.fnt`) |
+| `/playlist/` | the playlist container (`play-1.lst`) |
+| `/videos/` | video clips (`.avi`) |
+| `/sysdata/` | controller logs |
+
+Note the listing may render the playlist entry with a `?` separator followed by the
+source authoring filename; the actual readable path is `/playlist/play-1.lst`.
 
 ### 3.3 Info query
 Returns a mixed ASCII/binary block: panel geometry, CPU model, firmware date, Linux kernel
@@ -140,6 +153,26 @@ Frames are plain **24-bit uncompressed Windows BMPs** (`BI_RGB`, no palette) at 
 resolution — for a 112×32 panel, exactly **10806 bytes** (54-byte header + 112×32×3).
 Rows are stored bottom-up and channels are BGR, per the BMP spec.
 
+### 5.1 Video
+These controllers accept **video directly** — they do not require the host to transcode to a
+frame sequence. A clip resident on live hardware was:
+
+```
+AVI container · H.264/AVC · yuv420p · 112x32 · 29.97 fps · 7.2 s · 104 KB
+```
+
+i.e. an ordinary AVI whose video stream has been scaled to **exactly panel resolution**. The
+vendor application wraps ffmpeg to do that scaling before upload. To produce a conforming
+clip:
+
+```
+ffmpeg -i input.mp4 -vf "scale=WIDTHxHEIGHT" -c:v libx264 -pix_fmt yuv420p \
+       -r 30000/1001 -an output.avi
+```
+
+The upload file-type constant for video is not yet known — see §4.1.
+
+### 5.2 Compressed frames
 Controllers also store a **`.zlb`** sibling for each bitmap: raw zlib of the BMP bytes
 (`78 5e` header), confirmed to decompress byte-identically. Compression on typical sign
 art runs about **28:1**.
