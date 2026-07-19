@@ -107,6 +107,7 @@ off  size  field
  0   8     73 04 07 03 02 02 00 00
  8   4     uint32 LE — payload size
 12   4     file type: 02 00 02 00 = bitmap · 04 00 04 00 = playlist
+           (both CONFIRMED on the wire; the video constant is not yet known)
 16   2     uint16 seconds
 18   2     uint16 minutes
 20   2     uint16 hours
@@ -139,13 +140,39 @@ The vendor app skips frames already resident with identical content — an uncha
 playlist uploads zero bitmaps and only rewrites the container.
 
 ### 4.5 Playlist container  `[PARTIAL]`
-The container (`play-1.lst`) begins with a `uint32` entry count, then the source authoring
-file path in a fixed NUL-padded field, then panel geometry as two `uint16`s, then a
-parameters block, then per-entry records naming each bitmap in play order, then font
-references.
+`play-1.lst` begins with a `uint32` entry count, then the source authoring file path in a
+fixed-width NUL-padded field, then panel geometry as two `uint16`s and a parameters block,
+then per-entry records in play order.
 
-The per-entry record layout is **not fully decoded**. This library therefore edits a
-captured container rather than synthesising one; see `program_with_template()`.
+**Entry records are variable length.** A record is:
+
+```
+12 zero bytes · 4-byte param block (c0 00 ff 00) · bitmap filename (NUL-padded,
+4-byte aligned) · trailing fields
+```
+
+Frames whose text is *static* are rendered into the bitmap by the host, and their record
+ends there. Frames carrying **dynamic text** (clock, temperature) additionally embed one
+sub-record per text object, each followed by a font reference:
+
+```
+... 05 00 12 10 10 00 13 38 ... 00 00 00 ff "arial-19.fnt" 55 54 ...
+```
+
+This is why font names appear interleaved between frame records rather than in a separate
+table — they belong to the preceding frame's record. A parser that assumes a fixed stride
+will mis-handle any playlist containing a clock or temperature frame.
+
+Two fields recur in every record and appear to be scheduling: `80 51 01 00` (86400 — seconds
+in a day) and `ff ff ff 7f` (INT32_MAX, a no-end sentinel). Per-frame dayparting and date
+ranges are likely encoded here. `[UNVERIFIED]`
+
+Because sizing is not yet fully derived, this library edits a captured container rather than
+synthesising one; see `program_with_template()`.
+
+**Renaming caution:** bitmap filenames are derived from the authoring playlist's name.
+Renaming a playlist therefore renames every frame, causing a full re-upload of all bitmaps
+rather than an incremental one.
 
 ## 5. Frame format
 
