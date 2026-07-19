@@ -163,9 +163,24 @@ This is why font names appear interleaved between frame records rather than in a
 table — they belong to the preceding frame's record. A parser that assumes a fixed stride
 will mis-handle any playlist containing a clock or temperature frame.
 
-Two fields recur in every record and appear to be scheduling: `80 51 01 00` (86400 — seconds
-in a day) and `ff ff ff 7f` (INT32_MAX, a no-end sentinel). Per-frame dayparting and date
-ranges are likely encoded here. `[UNVERIFIED]`
+Each record carries a trailing parameter block:
+
+```
+80 51 01 00   uint32 = 86400      schedule window, seconds in a day   [INFERRED]
+00 00 00 00
+ff ff ff 7f   uint32 = INT32_MAX  no-end sentinel                     [INFERRED]
+<dwell>       uint32              DWELL TIME IN MILLISECONDS          [CONFIRMED]
+00 00 00 00
+<n>           uint16              entry number                        [INFERRED]
+```
+
+**Dwell is confirmed.** Changing one frame's on-screen time from 3 s to 1 s in the vendor
+app altered exactly two bytes in the whole container — `b8 0b` → `e8 03`, i.e. the uint32
+3000 → 1000. Dwell is therefore milliseconds, not seconds, despite the authoring UI
+presenting whole seconds.
+
+The neighbouring 86400 and INT32_MAX values are consistent with per-frame dayparting and an
+open-ended date range, but have not been moved experimentally and remain inferred.
 
 Because sizing is not yet fully derived, this library edits a captured container rather than
 synthesising one; see `program_with_template()`.
