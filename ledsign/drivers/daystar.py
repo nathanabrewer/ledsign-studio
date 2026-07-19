@@ -8,21 +8,29 @@ uploaded to it both hash-match the reference copy on the authoring PC).
 See docs/protocol-daystar.md for the wire format.
 
 Status of each operation:
-  info()        CONFIRMED
-  list_files()  CONFIRMED
-  get_file()    CONFIRMED
-  put_file()    CONFIRMED
-  start()       CONFIRMED
-  program()     PARTIAL — the playlist container's per-entry record layout is
-                only partially decoded, so playlists are produced by editing a
-                captured template rather than synthesised from scratch. See
-                `program_with_template`.
+  info()             CONFIRMED
+  list_files()       CONFIRMED
+  get_file()         CONFIRMED
+  put_file()         CONFIRMED
+  start()            CONFIRMED
+  playlist editing   CONFIRMED — insert/reorder/dwell, verified by reading the
+                     container back off live hardware byte-identical
+  program()          NOT SUPPORTED — building a container from nothing needs the
+                     header block ahead of the entries, which is undecoded. Edit
+                     the running container instead (get_playlist/add_frame).
 
-TODO: AVI / animation. The controller family stores zlib-compressed frames
-(".zlb", confirmed: raw zlib of the BMP, ~28:1). The vendor app wraps ffmpeg
-client-side, so video is almost certainly transcoded to a frame sequence rather
-than uploaded as a container — but this is unverified and needs a capture of a
-video transmit before it is implemented.
+Known limitation: records for frames carrying *dynamic* text (clock, temperature)
+embed extra text-object and font sub-records, which shifts their parameter block.
+playlist_entries() reads such an entry's dwell incorrectly. Static frames — the
+overwhelming majority — are fine.
+
+Video: these controllers accept video natively. A clip pulled off live hardware is
+an ordinary AVI carrying H.264/yuv420p scaled to exactly panel resolution; the
+host does NOT transcode to a frame sequence. Uploading video is not implemented
+because the upload file-type constant for video is still unknown.
+
+Frames may also be stored zlib-compressed (".zlb", confirmed raw zlib of the BMP,
+about 28:1).
 """
 from __future__ import annotations
 import socket, struct, zlib, datetime
@@ -258,12 +266,116 @@ class DayStarSign(SignDriver):
             s.sendall(START_FRAME)
             self._recv_exact(s, 13)
 
+    # ------------------------------------------------- playlist container
+    # Entries are edited by cloning an existing record and overwriting its name
+    # and dwell. This sidesteps deriving the rule that sizes the name field: the
+    # field is fixed-width within a container, so any name that fits works.
+    # Verified against live hardware by inserting an entry and reading the
+    # container back byte-identical.
+    REC0 = 408          # offset of the first entry record
+    NAME_OFF = 4        # name field, relative to record start
+    # Parameter block follows the name field (which is NAME_FIELD bytes wide):
+    #   +NAME_OFF+field+0   uint32  time span (86400 = all day)
+    #   +NAME_OFF+field+8   uint32  end-date sentinel (INT32_MAX = no end)
+    #   +NAME_OFF+field+12  uint32  dwell, milliseconds
+    DWELL_REL = 12      # dwell uint32, relative to the end of the name field
+
+    @classmethod
+    def _stride(cls, container: bytes) -> int:
+        """Distance between consecutive entry records (uniform within a container)."""
+        marker = container[cls.REC0:cls.REC0 + 4]
+        nxt = container.find(marker, cls.REC0 + 4)
+        if nxt < 0:
+            raise ValueError("could not determine entry stride")
+        return nxt - cls.REC0
+
+    @classmethod
+    def _name_field(cls, container: bytes) -> int:
+        return cls._stride(container) - 148
+
+    @classmethod
+    def playlist_entries(cls, container: bytes) -> list:
+        """Return [(name, dwell_ms)] for a playlist container."""
+        stride, out = cls._stride(container), []
+        count = struct.unpack_from("<I", container, 0)[0]
+        for i in range(count):
+            r = cls.REC0 + i * stride
+            if r + cls.NAME_OFF + 4 > len(container):
+                break
+            field = cls._name_field(container)
+            name = container[r + cls.NAME_OFF:r + cls.NAME_OFF + field]
+            name = name.split(b"\x00")[0].decode("ascii", "replace")
+            dwell = struct.unpack_from(
+                "<I", container, r + cls.NAME_OFF + field + cls.DWELL_REL)[0]
+            out.append((name, dwell))
+        return out
+
+    @classmethod
+    def playlist_insert(cls, container: bytes, name: str, dwell_ms: int = 3000,
+                        index: int = -1, clone_from: int = 0) -> bytes:
+        """Insert an entry, returning a new container.
+
+        `name` must fit the container's name field (see `name_capacity`).
+        `clone_from` picks which existing record to copy the parameter block from —
+        keep it on a plain static frame, since records for clock/temperature frames
+        carry extra embedded sub-records.
+        """
+        stride, field = cls._stride(container), cls._name_field(container)
+        if len(name) + 1 > field:
+            raise ValueError(
+                f"name {name!r} needs {len(name)+1} bytes but the field is {field}; "
+                f"use a shorter filename")
+        src = cls.REC0 + clone_from * stride
+        rec = bytearray(container[src:src + stride])
+        rec[cls.NAME_OFF:cls.NAME_OFF + field] = name.encode() + b"\x00" * (field - len(name))
+        struct.pack_into("<I", rec, cls.NAME_OFF + field + cls.DWELL_REL, int(dwell_ms))
+
+        count = struct.unpack_from("<I", container, 0)[0]
+        if index < 0 or index > count:
+            index = count
+        at = cls.REC0 + index * stride
+        out = bytearray(container[:at]) + rec + bytearray(container[at:])
+        struct.pack_into("<I", out, 0, count + 1)
+        return bytes(out)
+
+    @classmethod
+    def playlist_set_dwell(cls, container: bytes, index: int, dwell_ms: int) -> bytes:
+        out = bytearray(container)
+        r = cls.REC0 + index * cls._stride(container)
+        off = r + cls.NAME_OFF + cls._name_field(container) + cls.DWELL_REL
+        struct.pack_into("<I", out, off, int(dwell_ms))
+        return bytes(out)
+
+    @classmethod
+    def name_capacity(cls, container: bytes) -> int:
+        """Longest filename (excluding the NUL) this container can hold."""
+        return cls._name_field(container) - 1
+
+    def get_playlist(self) -> bytes:
+        return self.get_file("/playlist/play-1.lst")
+
+    def put_playlist(self, container: bytes, *, start: bool = True) -> None:
+        self._require_writes()
+        self.put_file("play-1.lst", container, filetype=FILETYPE_PLAYLIST)
+        if start:
+            self.start()
+
+    def add_frame(self, name: str, bmp_bytes: bytes, dwell_ms: int = 3000,
+                  index: int = -1) -> bytes:
+        """Upload a frame and add it to the running playlist. Returns the container."""
+        self._require_writes()
+        container = self.get_playlist()
+        updated = self.playlist_insert(container, name, dwell_ms, index)
+        self.put_file(name, bmp_bytes, filetype=FILETYPE_BITMAP)
+        self.put_playlist(updated)
+        return updated
+
     def program(self, playlist: Playlist) -> None:
         raise NotImplementedError(
-            "Synthesising a playlist container from scratch is not yet supported — "
-            "its per-entry record layout is only partially decoded. Use "
-            "program_with_template() with a playlist captured from the vendor app, "
-            "or upload frames individually with put_file() and start()."
+            "Building a container from nothing is not supported; the header/parameter "
+            "block ahead of the entry records is not fully decoded. Read the running "
+            "container with get_playlist() and edit it with playlist_insert() / "
+            "playlist_set_dwell(), or use add_frame()."
         )
 
     def program_with_template(self, template: bytes, frames: dict,
