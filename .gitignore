@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# private/ — NEVER COMMITTED.
+# Real sign content, packet captures, customer playlists, vendor binaries and
+# any reverse-engineering reference material live here. This repo is public;
+# everything in private/ is not.
+# ---------------------------------------------------------------------------
+private/
+!private/.gitkeep
+
+# Packet captures — always contain real network + business content
+*.pcap
+*.pcapng
+
+# Vendor binaries / installers — copyrighted, never redistribute
+*.exe
+*.ocx
+*.dll
+*.msi
+*.so
+*.bin
+*.fnt
+
+# Real sign content. Sample/synthetic content belongs in examples/ and must be
+# added with an explicit `git add -f`.
+*.dsm
+*.lst
+*.zlb
+
+# Bitmaps: frames are business content by default. Force-add curated samples.
+*.bmp
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Node / web
+node_modules/
+.parcel-cache/
+
+# Env & secrets
+.env
+.env.*
+*.pem
+*.key
+secrets.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+*.log
