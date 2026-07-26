@@ -17,13 +17,14 @@ part in the open.
 | `ledsign/dsm.py` | Importer for the `.dsm` playlist authoring format. |
 | `ledsign/drivers/base.py` | `SignDriver` — the interface every sign backend implements. |
 | `ledsign/drivers/daystar.py` | Driver for DayStar / DBStar-family controllers (TCP 6006). |
+| `ledsign/discover.py` | Multicast discovery — find signs on the LAN without knowing their IP. |
 | `docs/protocol-daystar.md` | The wire protocol, documented. |
 
 ## Supported signs
 
 | Family | Transport | Read | Write | Notes |
 |---|---|---|---|---|
-| DayStar / DBStar | TCP 6006 | ✅ | ✅ | Playlist container synthesis is partial — see the protocol doc |
+| DayStar / DBStar | TCP 6006 | ✅ | ✅ | Playlist *editing* confirmed (insert/reorder/dwell); synthesizing a container from scratch is not supported — see the protocol doc |
 
 The driver layer exists so this table can grow. Adding a sign means implementing
 `SignDriver`; nothing above that layer changes.
@@ -75,6 +76,31 @@ f.paste(logo, 4, 4)
 open("frame.bmp", "wb").write(bmp.encode(f))
 ```
 
+## Finding a sign
+
+If you don't know the sign's IP, discover it. Discovery is **read-only and passive** —
+it sends a UDP probe and listens; it touches nothing on the sign.
+
+```python
+from ledsign.discover import discover
+from ledsign.drivers.daystar import DayStarSign
+
+for s in discover(secs=5):
+    print(s["control_endpoint"], s["ascii"])      # e.g. 192.168.1.50:6006 ...
+    sign = DayStarSign(s["sign_ip"])
+    print(sign.info())
+```
+
+Or from the command line:
+
+```
+python ledsign/discover.py --secs 5
+```
+
+Discovery is **multicast**, so it does not cross routers, VPNs, or Tailscale — run it
+from a host on the sign's own L2 segment. If you can reach TCP 6006 over a routed path
+but discovery finds nothing, you're on the wrong side of a router, not a broken link.
+
 ## Safety
 
 These controllers are unauthenticated and cleartext, and on at least one family the **same
@@ -101,7 +127,8 @@ Point this at hardware you own or are authorized to operate.
 - **AVI / animation** — controllers store zlib-compressed frames and the vendor app wraps
   ffmpeg, so video is very likely a transcoded frame sequence rather than a container
   upload. Needs a capture of a video transmit to confirm.
-- Discovery reply field layout
+- Discovery reply field layout — the probe is confirmed and `discover.py` ships; only the
+  ASCII reply's exact field order is unverified (parsed best-effort)
 - More sign families
 
 ## License

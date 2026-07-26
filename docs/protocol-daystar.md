@@ -220,16 +220,48 @@ art runs about **28:1**.
 
 ## 6. Discovery  `[PARTIAL]`
 
-UDP multicast on port 6007. The probe is a 12-byte frame:
+A sign advertises nothing until probed. Discovery is **UDP multicast** on port
+**6007** (both send and receive) — a host that does not yet know the sign's IP can
+find it and learn its control endpoint. Reference implementation:
+[`ledsign/discover.py`](../ledsign/discover.py).
+
+### 6.1 Transport  `[CONFIRMED]`
+- Probe is sent to multicast **`224.0.0.1`** (all-hosts) : 6007.
+- The sign's announcement is received by **joining group `224.5.6.8`** and binding UDP
+  6007. The application also references `239.255.19.56` as an alternate/legacy group.
+- **Multicast is link-local** — it does not cross routers, VPNs, or Tailscale. Discovery
+  only works from a host on the panel's own L2 segment (or a host bridged to it). A host
+  that can reach TCP 6006 over a routed path but sees no discovery replies is on the wrong
+  side of a router, not a broken link.
+
+### 6.2 Probe — 12 bytes  `[CONFIRMED]`
 ```
-off 0     magic byte
-off 1-3   minimum firmware version (min, mid, maj)
-off 4-7   uint32 LE command word
-off 8-11  uint32 LE parameter
+off  size  field
+ 0   1     0x73 's' magic / sync. Becomes 0x74 't' on the newer protocol variant.
+ 1   1     minimum firmware version — Min
+ 2   1     minimum firmware version — Mid
+ 3   1     minimum firmware version — Maj
+ 4   4     uint32 LE command word: 0x1002 = discovery probe; 0x1003 = variant
+ 8   4     uint32 LE parameter = 0x00000000
 ```
-An ASCII probe variant also exists. Controllers announce on a separate multicast group with
-an ASCII payload containing at least their IP. Exact reply field order is unverified.
-Multicast is link-local — discovery only works from the panel's own L2 segment.
+`0x1002` little-endian on the wire = `02 10 00 00`. The version bytes are a *minimum*
+gate; `00 00 00` is accepted in practice. A plain-ASCII probe variant also sends the
+string **`"Is anybody there?"`** to the same group/port — a human-readable ping.
+
+### 6.3 Announcement (sign → client)  `[PARTIAL]`
+- Arrives on group **`224.5.6.8` : 6007**, UDP.
+- Payload is **ASCII** (the application does `Encoding.ASCII.GetString` then parses it).
+- Carries at minimum the sign's **IP address**. Based on the `.dsm` field set it almost
+  certainly also carries the display number, model/SIGNT, and width×height — but the exact
+  field order and delimiter are **unverified** and parsed best-effort. A single capture on
+  the panel's L2 segment would pin this.
+
+### 6.4 Sequence
+```
+host  ──UDP──▶ 224.0.0.1:6007      probe (12-byte frame, cmd 0x1002) + ASCII variant
+sign  ──UDP──▶ 224.5.6.8:6007      ASCII announcement (ip, identity)        [PARTIAL]
+host  ──TCP──▶ <sign-ip>:6006       connect — hand off to §1–§5
+```
 
 ## 7. Security notes
 
